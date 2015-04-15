@@ -32,7 +32,7 @@ FLetMeTakeASelfie::FLetMeTakeASelfie()
 	SelfieTimeWaited = 0;
 	PreviousImage = nullptr;
 	SelfieFrameDelay = 1.0f / 15.f;
-	SelfieFramesMax = 1.0f / SelfieFrameDelay;
+	SelfieFramesMax = 6.0f / SelfieFrameDelay;
 	SelfieDeltaTimeAccum = 0;
 	SelfieFrames = 0;
 	bStartedAnimatedWritingTask = false;
