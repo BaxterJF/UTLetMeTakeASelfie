@@ -2,9 +2,14 @@
 #pragma once
 
 #include "Core.h"
+#include "Engine.h"
 #include "UnrealTournament.h"
 
+#include <string>
+
 #include "gd.h"
+
+#include "Http.h"
 
 #include "LetMeTakeASelfie.generated.h"
 
@@ -36,6 +41,7 @@ struct FLetMeTakeASelfie : FTickableGameObject, FSelfRegisteringExec
 
 	TMap< UWorld*, USceneCaptureComponent2D* > WorldToSceneCaptureComponentMap;
 	UWorld* SelfieWorld;
+	bool bTakingSelfie;
 	bool bTakingAnimatedSelfie;
 	float SelfieTimeTotal;
 	int32 SelfieFrames;
@@ -44,18 +50,6 @@ struct FLetMeTakeASelfie : FTickableGameObject, FSelfRegisteringExec
 	float SelfieFrameDelay;
 	float SelfieDeltaTimeAccum;
 	bool bStartedAnimatedWritingTask;
-	int32 SelfieWidth;
-	int32 SelfieHeight;
-	int32 SelfieFrameRate;
-	bool bFirstPerson;
-	bool bRegisteredSlateDelegate;
-
-	// Capturing in a ring buffer, this is the current head
-	int32 HeadFrame;
-
-	TWeakObjectPtr<AUTProjectile> FollowingProjectile;
-	int32 RecordedNumberOfScoringPlayers;
-	float DelayedEventWriteTimer;
 
 	// Currently never cleaned up, gdImageFree was very expensive when run from a worker thread
 	TArray<gdImagePtr> SelfieImages;
@@ -67,66 +61,7 @@ struct FLetMeTakeASelfie : FTickableGameObject, FSelfRegisteringExec
 	bool bSelfieSurfDataReady;
 	void ReadPixelsAsync(FRenderTarget* RenderTarget);
 	
-
-
-	/** Static: Readback textures for asynchronously reading the viewport frame buffer back to the CPU.  We ping-pong between the buffers to avoid stalls. */
-	FTexture2DRHIRef ReadbackTextures[2];
-	/** Static: We ping pong between the textures in case the GPU is a frame behind (GSystemSettings.bAllowOneFrameThreadLag) */
-	int32 ReadbackTextureIndex;
-	/** Static: Pointers to mapped system memory readback textures that game frames will be asynchronously copied to */
-	void* ReadbackBuffers[2];
-	/** The current buffer index.  We bounce between them to avoid stalls. */
-	int32 ReadbackBufferIndex;
-	void OnSlateWindowRenderedDuringCapture(SWindow& SlateWindow, void* ViewportRHIPtr);
-	void CopyCurrentFrameToSavedFrames();
-	void StartCopyingNextGameFrame(const FViewportRHIRef& ViewportRHI);
-
 	void WriteWebM();
-};
 
-
-/* Based on https://wiki.unrealengine.com/Multi-Threading:_How_to_Create_Threads_in_UE4 */
-class FWriteWebMSelfieWorker : public FRunnable
-{
-	FWriteWebMSelfieWorker(FLetMeTakeASelfie* InLetMeTakeASelfie)
-	: LetMeTakeASelfie(InLetMeTakeASelfie)
-	{
-		Thread = FRunnableThread::Create(this, TEXT("FWriteWebMSelfieWorker"), 0, TPri_BelowNormal);
-	}
-
-	~FWriteWebMSelfieWorker()
-	{
-		delete Thread;
-		Thread = nullptr;
-
-	}
-
-	uint32 Run()
-	{
-		LetMeTakeASelfie->WriteWebM();
-
-		return 0;
-	}
-
-public:
-	static FWriteWebMSelfieWorker* RunWorkerThread(FLetMeTakeASelfie* InLetMeTakeASelfie)
-	{
-		if (Runnable)
-		{
-			delete Runnable;
-			Runnable = nullptr;
-		}
-
-		if (Runnable == nullptr)
-		{
-			Runnable = new FWriteWebMSelfieWorker(InLetMeTakeASelfie);
-		}
-
-		return Runnable;
-	}
-
-private:
-	FLetMeTakeASelfie* LetMeTakeASelfie;
-	FRunnableThread* Thread;
-	static FWriteWebMSelfieWorker* Runnable;
+	void Upload_WebM();
 };

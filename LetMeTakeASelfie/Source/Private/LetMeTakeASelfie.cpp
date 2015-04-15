@@ -4,56 +4,40 @@
 #include "UnrealTournament.h"
 #include "UTPlayerController.h"
 #include "UTGameState.h"
-#include "UTCTFGameState.h"
-
-#include "SlateBasics.h"
-#include "ScreenRendering.h"
-#include "RenderCore.h"
-#include "RHIStaticStates.h"
-#include "RendererInterface.h"
 
 #include "vpx/vpx_encoder.h"
 #include "vpx/vp8cx.h"
 #include "vpx/video_writer.h"
+#include "vpx/tools_common.h"
 #include "vpx/webmenc.h"
+
+#include "AllowWindowsPlatformTypes.h"
+#include <string>
+#include "curl/curl.h"
+#include "curl/easy.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUTSelfie, Log, All);
 
 ALetMeTakeASelfie::ALetMeTakeASelfie(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+
 }
 
 FLetMeTakeASelfie::FLetMeTakeASelfie()
 {
 	SelfieWorld = nullptr;
+	bTakingSelfie = false;
 	bTakingAnimatedSelfie = false;
 	SelfieTimeWaited = 0;
 	PreviousImage = nullptr;
-	SelfieFrameRate = 30;
-	const float SelfieLength = 6.0f;
-	SelfieFrameDelay = 1.0f / SelfieFrameRate;
-	SelfieFramesMax = SelfieLength / SelfieFrameDelay;
+	SelfieFrameDelay = 1.0f / 15.f;
+	SelfieFramesMax = 1.0f / SelfieFrameDelay;
 	SelfieDeltaTimeAccum = 0;
 	SelfieFrames = 0;
-	HeadFrame = 0;
 	bStartedAnimatedWritingTask = false;
 	bWaitingOnSelfieSurfData = false;
 	bSelfieSurfDataReady = false;
-	RecordedNumberOfScoringPlayers = 0;
-	DelayedEventWriteTimer = 0;
-	bFirstPerson = false;
-
-	SelfieWidth = 1280;
-	SelfieHeight = 720;
-	//SelfieWidth = 1024;
-	//SelfieHeight = 576;
-
-	bRegisteredSlateDelegate = false;
-	ReadbackTextureIndex = 0;
-	ReadbackBufferIndex = 0;
-	ReadbackBuffers[0] = nullptr;
-	ReadbackBuffers[1] = nullptr;
 }
 
 void FLetMeTakeASelfie::OnWorldCreated(UWorld* World, const UWorld::InitializationValues IVS)
@@ -62,50 +46,13 @@ void FLetMeTakeASelfie::OnWorldCreated(UWorld* World, const UWorld::Initializati
 	CaptureComponent->UpdateBounds();
 	CaptureComponent->AddToRoot();
 	CaptureComponent->TextureTarget = NewObject<UTextureRenderTarget2D>();
-	CaptureComponent->TextureTarget->InitCustomFormat(SelfieWidth, SelfieHeight, PF_B8G8R8A8, false);
+	CaptureComponent->TextureTarget->InitCustomFormat(1280, 720, PF_B8G8R8A8, false);
 	CaptureComponent->TextureTarget->ClearColor = FLinearColor::Black;
-	CaptureComponent->SetVisibility(false);
 	WorldToSceneCaptureComponentMap.Add(World, CaptureComponent);
-
-	if (!bRegisteredSlateDelegate)
-	{
-		FSlateRenderer* SlateRenderer = FSlateApplication::Get().GetRenderer().Get();
-		SlateRenderer->OnSlateWindowRendered().AddRaw(this, &FLetMeTakeASelfie::OnSlateWindowRenderedDuringCapture);
-		bRegisteredSlateDelegate = true;
-
-		// Setup readback buffer textures
-		{
-			for (int32 TextureIndex = 0; TextureIndex < 2; ++TextureIndex)
-			{
-				FRHIResourceCreateInfo CreateInfo;
-				ReadbackTextures[TextureIndex] = RHICreateTexture2D(
-					SelfieWidth,
-					SelfieHeight,
-					PF_B8G8R8A8,
-					1,
-					1,
-					TexCreate_CPUReadback,
-					CreateInfo
-					);
-			}
-
-			ReadbackTextureIndex = 0;
-
-			ReadbackBuffers[0] = nullptr;
-			ReadbackBuffers[1] = nullptr;
-			ReadbackBufferIndex = 0;
-		}
-	}
 
 	if (IVS.bInitializeScenes)
 	{
 		CaptureComponent->RegisterComponentWithWorld(World);
-	}
-
-	// Allocate the frames once, allocation can be very slow
-	for (int32 i = 0; SelfieImages.Num() < SelfieFramesMax && i < SelfieFramesMax; i++)
-	{
-		SelfieImages.Add(gdImageCreateTrueColor(SelfieWidth, SelfieHeight));
 	}
 }
 
@@ -123,57 +70,36 @@ void FLetMeTakeASelfie::OnWorldDestroyed(UWorld* World)
 
 	if (SelfieWorld == World)
 	{
+		bTakingSelfie = false;
 		bTakingAnimatedSelfie = false;
-		RecordedNumberOfScoringPlayers = 0;
 		SelfieWorld = nullptr;
 	}
 }
 
-FWriteWebMSelfieWorker* FWriteWebMSelfieWorker::Runnable = nullptr;
-\
-bool FLetMeTakeASelfie::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+bool FLetMeTakeASelfie::Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar)
 {
-	if (FParse::Command(&Cmd, TEXT("SELFIEANIM")))
+	if (FParse::Command(&Cmd, TEXT("SELFIE")))
 	{
-		if (bTakingAnimatedSelfie && SelfieWorld != InWorld)
+		if (bTakingSelfie || bTakingAnimatedSelfie)
 		{
-			// Already in a different world
 			return true;
 		}
 
-		SelfieWorld = InWorld;
-		bTakingAnimatedSelfie = true;
-
-		if (FParse::Command(&Cmd, TEXT("FPS")))
-		{
-			bFirstPerson = true;
-		}
-		else
-		{
-			bFirstPerson = false;
-		}
-
-		USceneCaptureComponent2D* CaptureComponent = WorldToSceneCaptureComponentMap.FindChecked(InWorld);
-		if (bFirstPerson)
-		{
-			CaptureComponent->SetVisibility(false);
-		}
-		else
-		{
-			CaptureComponent->SetVisibility(true);
-		}
-
+		SelfieWorld = Inworld;
+		bTakingSelfie = true;
+		
 		return true;
 	}
-
-	if (FParse::Command(&Cmd, TEXT("SELFIEWRITE")))
+	if (FParse::Command(&Cmd, TEXT("SELFIEANIM")))
 	{
-		if (!bTakingAnimatedSelfie || bStartedAnimatedWritingTask)
+		if (bTakingSelfie || bTakingAnimatedSelfie)
 		{
 			return true;
 		}
-		bStartedAnimatedWritingTask = true;
-		FWriteWebMSelfieWorker::RunWorkerThread(this);
+
+		SelfieWorld = Inworld;
+		bTakingAnimatedSelfie = true;
+		bStartedAnimatedWritingTask = false;
 
 		return true;
 	}
@@ -181,10 +107,132 @@ bool FLetMeTakeASelfie::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& A
 	return false;
 }
 
+/* Based on https://wiki.unrealengine.com/Multi-Threading:_How_to_Create_Threads_in_UE4 */
+class FWriteWebMSelfieWorker : public FRunnable
+{
+	FWriteWebMSelfieWorker(FLetMeTakeASelfie* InLetMeTakeASelfie)
+		: LetMeTakeASelfie(InLetMeTakeASelfie)
+	{
+		Thread = FRunnableThread::Create(this, TEXT("FWriteWebMSelfieWorker"), 0, TPri_BelowNormal);
+	}
+
+	~FWriteWebMSelfieWorker()
+	{
+		delete Thread;
+		Thread = nullptr;
+
+	}
+	
+	uint32 Run()
+	{
+		LetMeTakeASelfie->WriteWebM();
+
+		return 0;
+	}
+
+public:
+	static FWriteWebMSelfieWorker* RunWorkerThread(FLetMeTakeASelfie* InLetMeTakeASelfie)
+	{
+		if (Runnable)
+		{
+			delete Runnable;
+			Runnable = nullptr;
+		}
+
+		if (Runnable == nullptr)
+		{
+			Runnable = new FWriteWebMSelfieWorker(InLetMeTakeASelfie);
+		}
+
+		return Runnable;
+	}
+
+private:
+	FLetMeTakeASelfie* LetMeTakeASelfie;
+	FRunnableThread* Thread;
+	static FWriteWebMSelfieWorker* Runnable;
+};
+FWriteWebMSelfieWorker* FWriteWebMSelfieWorker::Runnable = nullptr;
+
+// This is not good, do not do long operations in task graph threads, this should be FRunnable
+class FWriteAnimatedSelfieTask
+{
+public:
+
+	FWriteAnimatedSelfieTask(FLetMeTakeASelfie* InLetMeTakeASelfie)
+		: LetMeTakeASelfie(InLetMeTakeASelfie)
+	{ }
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		UE_LOG(LogUTSelfie, Display, TEXT("Selfie writing beginning!"));
+
+		FString Path = FPaths::GameSavedDir() / TEXT("anim.gif");
+		FILE* SelfieGifFile = fopen(TCHAR_TO_ANSI(*Path), "wb");
+
+		gdRect CropRegion;
+		CropRegion.x = 365;
+		CropRegion.width = 550;
+		CropRegion.y = 70;
+		CropRegion.height = 650;
+		gdRect DestImage;
+		DestImage.x = DestImage.y = 0;
+		DestImage.width = 480;
+		DestImage.height = 570;
+		
+		TArray<gdImagePtr> ResizedImages;
+		double StartTime = FPlatformTime::Seconds();
+		for (int i = 0; i < LetMeTakeASelfie->SelfieImages.Num(); i++)
+		{
+			gdImagePtr CroppedImage = gdImageCreateTrueColor(DestImage.width, DestImage.height);
+			gdImageCopyResampled(CroppedImage, LetMeTakeASelfie->SelfieImages[i], DestImage.x, DestImage.y, CropRegion.x, CropRegion.y, DestImage.width, DestImage.height, CropRegion.width, CropRegion.height);
+			ResizedImages.Add(CroppedImage);
+			gdImageDestroy(LetMeTakeASelfie->SelfieImages[i]);
+		}
+		LetMeTakeASelfie->SelfieImages.Empty();
+
+		UE_LOG(LogUTSelfie, Display, TEXT("Image resizing took %5.3f seconds"), FPlatformTime::Seconds() - StartTime);
+		
+		StartTime = FPlatformTime::Seconds();
+		gdImageGifAnimBegin(ResizedImages[0], SelfieGifFile, 0, 0);
+
+		for (int i = 0; i < ResizedImages.Num(); i++)
+		{
+			gdImagePtr PreviousImage = i > 0 ? ResizedImages[i - 1] : nullptr;
+			gdImageGifAnimAdd(ResizedImages[i], SelfieGifFile, 1, 0, 0, LetMeTakeASelfie->SelfieFrameDelay * 100, 1, PreviousImage);
+		}
+
+		for (int i = 0; i < ResizedImages.Num(); i++)
+		{
+			gdImageDestroy(ResizedImages[i]);
+		}
+
+		gdImageGifAnimEnd(SelfieGifFile);
+		fclose(SelfieGifFile);
+		
+		UE_LOG(LogUTSelfie, Display, TEXT("Image writing took %5.3f seconds"), FPlatformTime::Seconds() - StartTime);
+
+		SelfieGifFile = nullptr;
+		LetMeTakeASelfie->bTakingAnimatedSelfie = false;
+	}
+
+	static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::FireAndForget; }
+	ENamedThreads::Type GetDesiredThread() { return ENamedThreads::AnyThread; }
+	FORCEINLINE TStatId GetStatId() const
+	{
+		RETURN_QUICK_DECLARE_CYCLE_STAT(FWriteAnimatedSelfieTask, STATGROUP_TaskGraphTasks);
+	}
+
+private:
+
+	FLetMeTakeASelfie* LetMeTakeASelfie;
+};
+
 void FLetMeTakeASelfie::ReadPixelsAsync(FRenderTarget* RenderTarget)
 {
+	SelfieSurfData.Empty(1280 * 720);
+
 	FIntRect InRect(0, 0, RenderTarget->GetSizeXY().X, RenderTarget->GetSizeXY().Y);
-	SelfieSurfData.Empty(RenderTarget->GetSizeXY().X * RenderTarget->GetSizeXY().Y);
 	FReadSurfaceDataFlags InFlags(RCM_UNorm, CubeFace_MAX);
 
 	// Read the render target surface data back.	
@@ -225,56 +273,12 @@ void FLetMeTakeASelfie::ReadPixelsAsync(FRenderTarget* RenderTarget)
 
 void FLetMeTakeASelfie::Tick(float DeltaTime)
 {
-	if (GIsEditor)
-	{
-		return;
-	}
-	
-	if (SelfieTimeWaited < 0.5f)
-	{
-		SelfieTimeWaited += DeltaTime;
-		return;
-	}
+// 	if (GIsEditor)
+// 	{
+// 		return;
+// 	}
 
-	if (bStartedAnimatedWritingTask)
-	{
-		return;
-	}
-	
-	if (DelayedEventWriteTimer > 0)
-	{
-		DelayedEventWriteTimer -= DeltaTime;
-		if (DelayedEventWriteTimer < 0)
-		{
-			bStartedAnimatedWritingTask = true;
-			FWriteWebMSelfieWorker::RunWorkerThread(this);
-		}
-	}
-
-	if (bWaitingOnSelfieSurfData)
-	{
-		if (bSelfieSurfDataReady)
-		{
-			int i = 0;
-
-			gdImagePtr ScreenshotImage = SelfieImages[HeadFrame];
-			for (int y = 0; y < SelfieHeight; y++)
-			for (int x = 0; x < SelfieWidth; x++)
-			{
-				int Color = gdTrueColor(SelfieSurfData[i].R, SelfieSurfData[i].G, SelfieSurfData[i].B);
-				gdImageSetPixel(ScreenshotImage, x, y, Color);
-				i++;
-			}
-			SelfieFrames = FMath::Min(SelfieFrames + 1, SelfieFramesMax);
-			HeadFrame += 1;
-			HeadFrame %= SelfieFramesMax;
-
-			bWaitingOnSelfieSurfData = false;
-			bSelfieSurfDataReady = false;
-		}
-	}
-
-	if (bTakingAnimatedSelfie && SelfieWorld != nullptr)
+	if (bTakingAnimatedSelfie && SelfieWorld != nullptr && !bStartedAnimatedWritingTask)
 	{
 		USceneCaptureComponent2D* CaptureComponent = WorldToSceneCaptureComponentMap.FindChecked(SelfieWorld);
 
@@ -282,43 +286,8 @@ void FLetMeTakeASelfie::Tick(float DeltaTime)
 
 		if (UTPC && UTPC->GetPawn())
 		{
-			APawn* Pawn = UTPC->GetPawn();
-
-			// Projectile following wasn't as cool as I wanted it to be
-			/*
-			if (!FollowingProjectile.IsValid())
-			{
-				for (TActorIterator<AUTProjectile> It(SelfieWorld); It; ++It)
-				{
-					if (!It->bFakeClientProjectile)
-					{
-						if (It->Instigator == Pawn && !It->bExploded)
-						{
-							FollowingProjectile = *It;
-						}
-					}
-				}
-			}
-
-			if (FollowingProjectile.IsValid())
-			{
-				FVector NewLocation = FollowingProjectile->GetActorLocation();
-				FRotator NewRotation = FollowingProjectile->GetActorRotation();
-				NewLocation += (NewRotation.RotateVector(FVector(-200, 0, 0)));
-				CaptureComponent->SetWorldLocationAndRotation(NewLocation, NewRotation, false);
-			}
-			else
-			{
-				FVector NewLocation = Pawn->GetActorLocation();
-				FRotator NewRotation = Pawn->GetActorRotation();
-				NewLocation += (NewRotation.RotateVector(FVector(200, 0, 100)));
-				NewRotation.Yaw += 180;
-				NewRotation.Pitch = -20;
-				CaptureComponent->SetWorldLocationAndRotation(NewLocation, NewRotation, false);
-			}*/
-
-			FVector NewLocation = Pawn->GetActorLocation();
-			FRotator NewRotation = Pawn->GetActorRotation();
+			FVector NewLocation = UTPC->GetPawn()->GetActorLocation();
+			FRotator NewRotation = UTPC->GetPawn()->GetActorRotation();
 			NewLocation += (NewRotation.RotateVector(FVector(200, 0, 100)));
 			NewRotation.Yaw += 180;
 			NewRotation.Pitch = -20;
@@ -326,30 +295,107 @@ void FLetMeTakeASelfie::Tick(float DeltaTime)
 		}
 
 		SelfieDeltaTimeAccum += DeltaTime;
-
-		if (!bWaitingOnSelfieSurfData && (SelfieFrames == 0 || SelfieDeltaTimeAccum > SelfieFrameDelay))
+		
+		if (bWaitingOnSelfieSurfData)
 		{
-			if (!bFirstPerson)
+			if (bSelfieSurfDataReady)
 			{
-				FRenderTarget* RenderTarget = CaptureComponent->TextureTarget->GameThread_GetRenderTargetResource();
-				ReadPixelsAsync(RenderTarget);
-				SelfieDeltaTimeAccum = 0;
+				int i = 0;
+				if (SelfieImages.Num() - 1 < SelfieFrames)
+				{
+					SelfieImages.Add(gdImageCreateTrueColor(1280, 720));
+				}
+				gdImagePtr ScreenshotImage = SelfieImages[SelfieFrames];
+				for (int y = 0; y < 720; y++)
+				for (int x = 0; x < 1280; x++)
+				{
+					int Color = gdTrueColor(SelfieSurfData[i].R, SelfieSurfData[i].G, SelfieSurfData[i].B);
+					gdImageSetPixel(ScreenshotImage, x, y, Color);
+					i++;
+				}
+				SelfieFrames++;
+
+				bWaitingOnSelfieSurfData = false;
+				bSelfieSurfDataReady = false;
 			}
 		}
-				
-		// Try to autorecord if you cap the flag
-		AUTCTFGameState* GS = Cast<AUTCTFGameState>(SelfieWorld->GetGameState());
-		if (!bStartedAnimatedWritingTask && GS && UTPC->PlayerState)
-		{
-			if (RecordedNumberOfScoringPlayers < GS->GetScoringPlays().Num())
-			{
-				RecordedNumberOfScoringPlayers++;
 
-				if (GS->GetScoringPlays()[GS->GetScoringPlays().Num() - 1].ScoredBy.GetPlayerName() == UTPC->PlayerState->PlayerName)
-				{
-					DelayedEventWriteTimer = 2.0f;
-				}
+		if (SelfieFrames == SelfieFramesMax)
+		{
+			bStartedAnimatedWritingTask = true;
+			SelfieFrames = 0;
+
+			FWriteWebMSelfieWorker::RunWorkerThread(this);
+		}
+		else if (SelfieTimeWaited < 0.5f)
+		{
+			SelfieTimeWaited += DeltaTime;
+		}
+		else if (!bWaitingOnSelfieSurfData && (SelfieFrames == 0 || SelfieDeltaTimeAccum > SelfieFrameDelay))
+		{
+			double StartTime = FPlatformTime::Seconds();
+			FRenderTarget* RenderTarget = CaptureComponent->TextureTarget->GameThread_GetRenderTargetResource();
+			ReadPixelsAsync(RenderTarget);
+			SelfieDeltaTimeAccum = 0;
+		}
+	}
+	else if (bTakingSelfie && SelfieWorld != nullptr)
+	{
+		USceneCaptureComponent2D* CaptureComponent = WorldToSceneCaptureComponentMap.FindChecked(SelfieWorld);
+
+		AUTPlayerController* UTPC = Cast<AUTPlayerController>(GEngine->GetFirstLocalPlayerController(SelfieWorld));
+
+		if (UTPC && UTPC->GetPawn())
+		{
+			FVector NewLocation = UTPC->GetPawn()->GetActorLocation();
+			FRotator NewRotation = UTPC->GetPawn()->GetActorRotation();
+			NewLocation += (NewRotation.RotateVector(FVector(200, 0, 100)));
+			NewRotation.Yaw += 180;
+			NewRotation.Pitch = -20;
+			CaptureComponent->SetWorldLocationAndRotation(NewLocation, NewRotation, false);
+		}
+
+		if (SelfieTimeWaited > 0.25f)
+		{
+			FRenderTarget* RenderTarget = CaptureComponent->TextureTarget->GameThread_GetRenderTargetResource();
+			TArray<FColor> SurfData;
+			RenderTarget->ReadPixels(SurfData);
+
+			int i = 0;
+			gdImagePtr ScreenshotImage = gdImageCreateTrueColor(1280, 720);
+			for (int y = 0; y < 720; y++)
+			for (int x = 0; x < 1280; x++)
+			{
+				int Color = gdTrueColor(SurfData[i].R, SurfData[i].G, SurfData[i].B);
+				gdImageSetPixel(ScreenshotImage, x, y, Color);
+				i++;
 			}
+
+			gdRect CropRegion;
+			CropRegion.x = 365;
+			CropRegion.width = 550;
+			CropRegion.y = 70;
+			CropRegion.height = 650;
+
+			gdImagePtr CroppedImage = gdImageCreateTrueColor(CropRegion.width, CropRegion.height);
+			gdImageCopy(CroppedImage, ScreenshotImage, 0, 0, CropRegion.x, CropRegion.y, CropRegion.width, CropRegion.height);
+			
+			gdImageDestroy(ScreenshotImage);
+			
+			FILE * RawScreenShotFile;
+			FString ScreenshotPath = FPaths::GameSavedDir() / TEXT("screenshot.bmp");
+			RawScreenShotFile = fopen(TCHAR_TO_ANSI(*ScreenshotPath), "wb");
+			gdImageBmp(CroppedImage, RawScreenShotFile, 0);
+			gdImageDestroy(CroppedImage);
+			fclose(RawScreenShotFile);
+
+			SelfieTimeWaited = 0;
+			bTakingSelfie = false;
+			SelfieWorld = nullptr;
+		}
+		else
+		{
+			SelfieTimeWaited += DeltaTime;
 		}
 	}
 }
@@ -362,12 +408,11 @@ void ARGB_To_YV12(gdImagePtr Image, int nFrameWidth, int nFrameHeight, void *pFu
 	unsigned char *pYPlaneOut = (unsigned char*)pFullYPlane;
 	int nYPlaneOut = 0;
 
-	// never deallocated due to laziness
-	static unsigned char* pRGBData = new unsigned char[nRGBBytes * 3];
+	unsigned char* pRGBData = new unsigned char[nRGBBytes * 3];
 	
 	int i = 0;
-	for (int y = 0; y < nFrameHeight; y++)
-	for (int x = 0; x < nFrameWidth; x++)
+	for (int y = 0; y < 720; y++)
+	for (int x = 0; x < 1280; x++)
 	{
 		// gd has image data stored in ARGB
 		int PixelColor = gdImageGetTrueColorPixel(Image, x, y);
@@ -409,14 +454,16 @@ void ARGB_To_YV12(gdImagePtr Image, int nFrameWidth, int nFrameHeight, void *pFu
 			iBaseSrc += 6;
 		}
 	}
+	delete [] pRGBData;
 }
 
 void FLetMeTakeASelfie::WriteWebM()
 {		
-	int32 width = SelfieWidth;
-	int32 height = SelfieHeight;
+	int32 width = 1280;
+	int32 height = 720;
 
 	VpxVideoInfo info = { 0 };
+	const VpxInterface *encoder = NULL;
 	FILE* file = nullptr;
 	vpx_codec_ctx_t      codec;
 	vpx_codec_enc_cfg_t  cfg;
@@ -424,22 +471,26 @@ void FLetMeTakeASelfie::WriteWebM()
 	struct EbmlGlobal    ebml;
 	int                  flags = 0;
 
-#define interface (vpx_codec_vp8_cx())
+	encoder = get_vpx_encoder_by_name("vp8");
+	if (!encoder)
+	{
+		return;
+	}
 
-	res = vpx_codec_enc_config_default(interface, &cfg, 0);
+	UE_LOG(LogUTSelfie, Display, TEXT("Compressing with %s"), ANSI_TO_TCHAR(vpx_codec_iface_name(encoder->codec_interface())));
+
+	res = vpx_codec_enc_config_default(encoder->codec_interface(), &cfg, 0);
 	if (res)
 	{
 		return;
 	}
-	UE_LOG(LogUTSelfie, Display, TEXT("Compressing with %s"), ANSI_TO_TCHAR(vpx_codec_iface_name(interface)));
 
 	cfg.rc_target_bitrate = width * height * cfg.rc_target_bitrate / cfg.g_w / cfg.g_h;
 	cfg.g_w = width;
 	cfg.g_h = height;
-	cfg.g_timebase.den = SelfieFrameRate;
+	cfg.g_timebase.den = 15;
 
-#define VP8_FOURCC 0x30385056
-	info.codec_fourcc = VP8_FOURCC;
+	info.codec_fourcc = encoder->fourcc;
 	info.frame_width = width;
 	info.frame_height = height;
 	info.time_base.numerator = cfg.g_timebase.num;
@@ -455,30 +506,16 @@ void FLetMeTakeASelfie::WriteWebM()
 		return;
 	}
 
-	if (vpx_codec_enc_init(&codec, interface, &cfg, 0))
+	if (vpx_codec_enc_init(&codec, encoder->codec_interface(), &cfg, 0))
 	{
 		return;
 	}
-	
-	FString BasePath = FPaths::ScreenShotDir();
-	FString WebMPath = BasePath / TEXT("anim.webm");
-	static int32 WebMIndex = 0;
-	const int32 MaxTestWebMIndex = 65536;
-	for (int32 TestWebMIndex = WebMIndex + 1; TestWebMIndex < MaxTestWebMIndex; ++TestWebMIndex)
-	{
-		const FString TestFileName = BasePath / FString::Printf(TEXT("UTSelfie%05i.webm"), TestWebMIndex);
-		if (IFileManager::Get().FileSize(*TestFileName) < 0)
-		{
-			WebMIndex = TestWebMIndex;
-			WebMPath = TestFileName;
-			break;
-		}
-	}
 
+	FString WebMPath = FPaths::GameSavedDir() / TEXT("anim.webm");
 	file = fopen(TCHAR_TO_ANSI(*WebMPath), "wb");
 	ebml.stream = file;
 	struct vpx_rational framerate = cfg.g_timebase;
-	write_webm_file_header(&ebml, &cfg, &framerate, STEREO_FORMAT_MONO, VP8_FOURCC);
+	write_webm_file_header(&ebml, &cfg, &framerate, STEREO_FORMAT_MONO, encoder->fourcc);
 	if (!file)
 	{
 		return;
@@ -487,9 +524,9 @@ void FLetMeTakeASelfie::WriteWebM()
 	// write some frames
 	int32 frame_cnt = 0;
 	
-	for (int i = 0; i < SelfieFrames; i++)
+	for (int i = 0; i < SelfieImages.Num(); i++)
 	{
-		ARGB_To_YV12(SelfieImages[(HeadFrame + i) % SelfieFramesMax], width, height, raw.planes[VPX_PLANE_Y], raw.planes[VPX_PLANE_U], raw.planes[VPX_PLANE_V]);
+		ARGB_To_YV12(SelfieImages[i], width, height, raw.planes[VPX_PLANE_Y], raw.planes[VPX_PLANE_U], raw.planes[VPX_PLANE_V]);
 
 		vpx_codec_encode(&codec, &raw, frame_cnt, 1, flags, VPX_DL_GOOD_QUALITY);
 		vpx_codec_iter_t iter = NULL;
@@ -527,7 +564,7 @@ void FLetMeTakeASelfie::WriteWebM()
 		}
 	}
 
-	vpx_img_free(&raw);                                                       //
+	vpx_img_free(&raw);
 	if (vpx_codec_destroy(&codec))
 	{
 		// failed to destroy
@@ -539,182 +576,82 @@ void FLetMeTakeASelfie::WriteWebM()
 	fclose(file);
 
 	SelfieTimeWaited = 0;
-	bStartedAnimatedWritingTask = false;
-	SelfieFrames = 0;
+	bTakingAnimatedSelfie = false;
+
+	Upload_WebM();
 
 	UE_LOG(LogUTSelfie, Display, TEXT("Selfie complete!"));
 }
 
-// Borrowed from GameLiveStreaming.cpp
-void FLetMeTakeASelfie::OnSlateWindowRenderedDuringCapture(SWindow& SlateWindow, void* ViewportRHIPtr)
-{
-	UGameViewportClient* GameViewportClient = GEngine->GameViewport;
-	if (!bStartedAnimatedWritingTask && bTakingAnimatedSelfie && bFirstPerson && GameViewportClient != nullptr)
-	{
-		if (GameViewportClient->GetWindow() == SlateWindow.AsShared())
-		{
-			if (SelfieDeltaTimeAccum > SelfieFrameDelay)
-			{
-				CopyCurrentFrameToSavedFrames();
+std::string readBuffer;
 
-				const FViewportRHIRef* ViewportRHI = (const FViewportRHIRef*)ViewportRHIPtr;
-				StartCopyingNextGameFrame(*ViewportRHI);
-				SelfieDeltaTimeAccum = 0;
-			}
-		}
-	}
+size_t writeCallback(char* buf, size_t size, size_t nmemb, void* up)
+{
+    for (int c = 0; c<size*nmemb; c++)
+    {
+        readBuffer.push_back(buf[c]);
+    }
+    return size*nmemb;
 }
 
-void FLetMeTakeASelfie::CopyCurrentFrameToSavedFrames()
+void FLetMeTakeASelfie::Upload_WebM()
 {
-	if (ReadbackBuffers[ReadbackBufferIndex] != nullptr)
-	{
-		// Have a new buffer from the GPU
-		int i = 0;
+	CURL *curl;
+	CURLcode req;
+	char error[CURL_ERROR_SIZE];
+	FString FWebMPath = FPaths::Combine(FGenericPlatformProcess::UserDir(), TEXT("UnrealTournament/Saved/anim.webm"));
+	FWebMPath = FWebMPath.Replace(TEXT("/"), TEXT("\\\\"));
+	auto WebMPath = TCHAR_TO_ANSI(*FWebMPath);
 
-		gdImagePtr ScreenshotImage = SelfieImages[HeadFrame];
-		for (int y = 0; y < SelfieHeight; y++)
-		for (int x = 0; x < SelfieWidth; x++)
+	struct curl_httppost *post = NULL;
+	struct curl_httppost *last = NULL;
+
+	curl = curl_easy_init();
+	if (curl) {
+		curl_easy_setopt(curl, CURLOPT_URL, "https://api.vid.me/video/upload");
+		curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &writeCallback);
+
+		curl_formadd(&post, &last,
+			CURLFORM_COPYNAME, "filedata",
+			CURLFORM_FILE, WebMPath,
+			CURLFORM_END);
+
+		curl_easy_setopt(curl, CURLOPT_HTTPPOST, post);
+
+		req = curl_easy_perform(curl);
+
+		if (req != CURLE_OK)
 		{
-			FColor& SurfData = ((FColor*)ReadbackBuffers[ReadbackBufferIndex])[i];
-			int Color = gdTrueColor(SurfData.R, SurfData.G, SurfData.B);
-			gdImageSetPixel(ScreenshotImage, x, y, Color);
-			i++;
-		}
-		SelfieFrames = FMath::Min(SelfieFrames + 1, SelfieFramesMax);
-		HeadFrame += 1;
-		HeadFrame %= SelfieFramesMax;
-
-		// Unmap the buffer now that we've pushed out the frame
-		{
-			struct FReadbackFromStagingBufferContext
-			{
-				FLetMeTakeASelfie* This;
-			};
-			FReadbackFromStagingBufferContext ReadbackFromStagingBufferContext =
-			{
-				this
-			};
-			ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-				ReadbackFromStagingBuffer,
-				FReadbackFromStagingBufferContext, Context, ReadbackFromStagingBufferContext,
-				{
-				RHICmdList.UnmapStagingSurface(Context.This->ReadbackTextures[Context.This->ReadbackTextureIndex]);
-			});
-		}
-	}
-}
-
-void FLetMeTakeASelfie::StartCopyingNextGameFrame(const FViewportRHIRef& ViewportRHI)
-{
-	const FIntPoint ResizeTo(SelfieWidth, SelfieHeight);
-
-	static const FName RendererModuleName("Renderer");
-	IRendererModule& RendererModule = FModuleManager::GetModuleChecked<IRendererModule>(RendererModuleName);
-
-	UGameViewportClient* GameViewportClient = GEngine->GameViewport;
-	check(GameViewportClient != nullptr);
-
-	struct FCopyVideoFrame
-	{
-		FViewportRHIRef ViewportRHI;
-		IRendererModule* RendererModule;
-		FIntPoint ResizeTo;
-		FLetMeTakeASelfie* This;
-	};
-	FCopyVideoFrame CopyVideoFrame =
-	{
-		ViewportRHI,
-		&RendererModule,
-		ResizeTo,
-		this
-	};
-
-	ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-		ReadSurfaceCommand,
-		FCopyVideoFrame, Context, CopyVideoFrame,
-		{
-		FPooledRenderTargetDesc OutputDesc(FPooledRenderTargetDesc::Create2DDesc(Context.ResizeTo, PF_B8G8R8A8, TexCreate_None, TexCreate_RenderTargetable, false));
-
-		const auto FeatureLevel = GMaxRHIFeatureLevel;
-
-		TRefCountPtr<IPooledRenderTarget> ResampleTexturePooledRenderTarget;
-		Context.RendererModule->RenderTargetPoolFindFreeElement(OutputDesc, ResampleTexturePooledRenderTarget, TEXT("ResampleTexture"));
-		check(ResampleTexturePooledRenderTarget);
-
-		const FSceneRenderTargetItem& DestRenderTarget = ResampleTexturePooledRenderTarget->GetRenderTargetItem();
-
-		SetRenderTarget(RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIRef());
-		RHICmdList.SetViewport(0, 0, 0.0f, Context.ResizeTo.X, Context.ResizeTo.Y, 1.0f);
-
-		RHICmdList.SetBlendState(TStaticBlendState<>::GetRHI());
-		RHICmdList.SetRasterizerState(TStaticRasterizerState<>::GetRHI());
-		RHICmdList.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
-
-		FTexture2DRHIRef ViewportBackBuffer = RHICmdList.GetViewportBackBuffer(Context.ViewportRHI);
-
-		auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
-		TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
-		TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
-
-		static FGlobalBoundShaderState BoundShaderState;
-		SetGlobalBoundShaderState(RHICmdList, FeatureLevel, BoundShaderState, Context.RendererModule->GetFilterVertexDeclaration().VertexDeclarationRHI, *VertexShader, *PixelShader);
-
-		if (Context.ResizeTo != FIntPoint(ViewportBackBuffer->GetSizeX(), ViewportBackBuffer->GetSizeY()))
-		{
-			// We're scaling down the window, so use bilinear filtering
-			PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Bilinear>::GetRHI(), ViewportBackBuffer);
+			UE_LOG(LogUTSelfie, Display, TEXT("Selfie upload failed."));
 		}
 		else
 		{
-			// Drawing 1:1, so no filtering needed
-			PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), ViewportBackBuffer);
-		}
-
-		Context.RendererModule->DrawRectangle(
-			RHICmdList,
-			0, 0,		// Dest X, Y
-			Context.ResizeTo.X, Context.ResizeTo.Y,	// Dest Width, Height
-			0, 0,		// Source U, V
-			1, 1,		// Source USize, VSize
-			Context.ResizeTo,		// Target buffer size
-			FIntPoint(1, 1),		// Source texture size
-			*VertexShader,
-			EDRF_Default);
-
-		// Asynchronously copy render target from GPU to CPU
-		const bool bKeepOriginalSurface = false;
-		RHICmdList.CopyToResolveTarget(
-			DestRenderTarget.TargetableTexture,
-			Context.This->ReadbackTextures[Context.This->ReadbackTextureIndex],
-			bKeepOriginalSurface,
-			FResolveParams());
-	});
-
-
-	// Start mapping the newly-rendered buffer
-	{
-		struct FReadbackFromStagingBufferContext
-		{
-			FLetMeTakeASelfie* This;
-		};
-		FReadbackFromStagingBufferContext ReadbackFromStagingBufferContext =
-		{
-			this
-		};
-		ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-			ReadbackFromStagingBuffer,
-			FReadbackFromStagingBufferContext, Context, ReadbackFromStagingBufferContext,
+			int start = readBuffer.find("url\":\"");
+			int end = readBuffer.find("\",\"full_url\"", start);
+			std::string substring;
+			if (start != std::string::npos && end != std::string::npos)
 			{
-			int32 UnusedWidth = 0;
-			int32 UnusedHeight = 0;
-			RHICmdList.MapStagingSurface(Context.This->ReadbackTextures[Context.This->ReadbackTextureIndex], Context.This->ReadbackBuffers[Context.This->ReadbackBufferIndex], UnusedWidth, UnusedHeight);
-
-			// Ping pong between readback textures
-			Context.This->ReadbackTextureIndex = (Context.This->ReadbackTextureIndex + 1) % 2;
-		});
+			   substring = readBuffer.substr(start + 6, end - start - 6);
+			   const char *cstr = substring.c_str();
+			   FString SelfieURL = FPaths::Combine(TEXT("https://vid.me/"), ANSI_TO_TCHAR(cstr));
+			   FPlatformMisc::ClipboardCopy(*SelfieURL);
+			   UE_LOG(LogUTSelfie, Display, TEXT("Selfie URL copied to clipboard."));
+			}
+			else
+			{
+			   UE_LOG(LogUTSelfie, Display, TEXT("Failed to find URL code."));
+			}
+		}
+		curl_easy_cleanup(curl);
 	}
+ 	curl_global_cleanup();
+}
 
-	// Ping pong between readback buffers
-	ReadbackBufferIndex = (ReadbackBufferIndex + 1) % 2;
+// TODO: don't take a dependency on tools_common
+// stub for tools_common
+
+void usage_exit()
+{
+
 }

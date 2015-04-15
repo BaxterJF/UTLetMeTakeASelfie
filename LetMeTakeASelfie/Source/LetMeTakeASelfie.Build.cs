@@ -22,16 +22,18 @@ namespace UnrealBuildTool.Rules
 				}
 				);
 
-            var LIBPath = Path.Combine("..", "..", "UnrealTournament", "Plugins", "LetMeTakeASelfie", "Source", "lib");
+            var LIBPath = Path.Combine("..", "..", "UnrealTournament", "Plugins", "UTLetMeTakeASelfie", "LetMeTakeASelfie", "Source", "lib");
 
             var GDLibPath = Path.Combine(LIBPath, "libgd.lib");
             var VPXLibPath = Path.Combine(LIBPath, "vpxmd.lib");
+            var CurlLibPath = Path.Combine(LIBPath, "libcurl.lib");
             //var VPXLibPath = Path.Combine(LIBPath, "vpxmdd.lib");
-            
+
 			// Lib file
             PublicLibraryPaths.Add(LIBPath);
             PublicAdditionalLibraries.Add(GDLibPath);
             PublicAdditionalLibraries.Add(VPXLibPath);
+            PublicAdditionalLibraries.Add(CurlLibPath);
             Definitions.Add("BGDWIN32");
             //Definitions.Add("NONDLL");
 		}
