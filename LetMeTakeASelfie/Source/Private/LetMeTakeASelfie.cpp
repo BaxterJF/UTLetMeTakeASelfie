@@ -598,25 +598,30 @@ void FLetMeTakeASelfie::Upload_WebM()
 {
 	CURL *curl;
 	CURLcode req;
+
 	char error[CURL_ERROR_SIZE];
+
 	FString FWebMPath = FPaths::Combine(FGenericPlatformProcess::UserDir(), TEXT("UnrealTournament/Saved/anim.webm"));
 	FWebMPath = FWebMPath.Replace(TEXT("/"), TEXT("\\\\"));
 	auto WebMPath = TCHAR_TO_ANSI(*FWebMPath);
 
 	struct curl_httppost *post = NULL;
 	struct curl_httppost *last = NULL;
+	struct curl_slist *list = NULL;
 
 	curl = curl_easy_init();
 	if (curl) {
-		curl_easy_setopt(curl, CURLOPT_URL, "https://api.vid.me/video/upload");
-		curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &writeCallback);
-
 		curl_formadd(&post, &last,
 			CURLFORM_COPYNAME, "filedata",
 			CURLFORM_FILE, WebMPath,
 			CURLFORM_END);
 
+		list = curl_slist_append(list, "AccessToken: c00ec532a2e441bb956e80d7803b40cb");
+
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
+		curl_easy_setopt(curl, CURLOPT_URL, "https://api.vid.me/video/upload");
+		curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &writeCallback);
 		curl_easy_setopt(curl, CURLOPT_HTTPPOST, post);
 
 		req = curl_easy_perform(curl);
