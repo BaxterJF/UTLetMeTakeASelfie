@@ -6,10 +6,9 @@
 #include "UnrealTournament.h"
 
 #include <string>
+#include "Http.h"
 
 #include "gd.h"
-
-#include "Http.h"
 
 #include "LetMeTakeASelfie.generated.h"
 

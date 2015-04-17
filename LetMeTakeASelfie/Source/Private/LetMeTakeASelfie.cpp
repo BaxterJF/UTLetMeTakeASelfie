@@ -11,6 +11,7 @@
 #include "vpx/tools_common.h"
 #include "vpx/webmenc.h"
 
+/* WebM Upload */
 #include "AllowWindowsPlatformTypes.h"
 #include <string>
 #include "curl/curl.h"
@@ -32,7 +33,7 @@ FLetMeTakeASelfie::FLetMeTakeASelfie()
 	SelfieTimeWaited = 0;
 	PreviousImage = nullptr;
 	SelfieFrameDelay = 1.0f / 15.f;
-	SelfieFramesMax = 6.0f / SelfieFrameDelay;
+	SelfieFramesMax = 1.0f / SelfieFrameDelay; //sethere
 	SelfieDeltaTimeAccum = 0;
 	SelfieFrames = 0;
 	bStartedAnimatedWritingTask = false;
@@ -583,8 +584,12 @@ void FLetMeTakeASelfie::WriteWebM()
 	UE_LOG(LogUTSelfie, Display, TEXT("Selfie complete!"));
 }
 
+
+// init buffer to store data from POST reply
 std::string readBuffer;
 
+
+// push data to buffer from reply
 size_t writeCallback(char* buf, size_t size, size_t nmemb, void* up)
 {
     for (int c = 0; c<size*nmemb; c++)
@@ -596,51 +601,77 @@ size_t writeCallback(char* buf, size_t size, size_t nmemb, void* up)
 
 void FLetMeTakeASelfie::Upload_WebM()
 {
+	// get cURL handle
 	CURL *curl;
-	CURLcode req;
 
+	// char to store any returned errors
 	char error[CURL_ERROR_SIZE];
 
+	// get the date, user's name and Saved directory and convert to cURL compatible format
 	FString FWebMPath = FPaths::Combine(FGenericPlatformProcess::UserDir(), TEXT("UnrealTournament/Saved/anim.webm"));
 	FWebMPath = FWebMPath.Replace(TEXT("/"), TEXT("\\\\"));
 	auto WebMPath = TCHAR_TO_ANSI(*FWebMPath);
 
+	AUTPlayerController* UTPC = Cast<AUTPlayerController>(GEngine->GetFirstLocalPlayerController(SelfieWorld));
+	AUTPlayerState* UTPS = Cast<AUTPlayerState>(UTPC->PlayerState);
+	FString FVideoTitle = UTPS->PlayerName + TEXT("'s Selfie - ") + FDateTime::Now().ToString();
+	auto VideoTitle = TCHAR_TO_ANSI(*FVideoTitle);
+
+	// initialize form structs and header list
 	struct curl_httppost *post = NULL;
 	struct curl_httppost *last = NULL;
 	struct curl_slist *list = NULL;
 
 	curl = curl_easy_init();
 	if (curl) {
+
+		// build multi-part form
 		curl_formadd(&post, &last,
 			CURLFORM_COPYNAME, "filedata",
 			CURLFORM_FILE, WebMPath,
 			CURLFORM_END);
+		curl_formadd(&post, &last,
+			CURLFORM_COPYNAME, "title",
+			CURLFORM_COPYCONTENTS, VideoTitle,
+			CURLFORM_END);
+		curl_formadd(&post, &last,
+			CURLFORM_COPYNAME, "description",
+			CURLFORM_COPYCONTENTS, "A short clip captured from gameplay in Epic's Unreal Tournament 4",
+			CURLFORM_END);
 
+		// append OAuth access token to header list
 		list = curl_slist_append(list, "AccessToken: c00ec532a2e441bb956e80d7803b40cb");
 
 		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
 		curl_easy_setopt(curl, CURLOPT_URL, "https://api.vid.me/video/upload");
 		curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
+
+		// callback to write data to reply buffer
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &writeCallback);
+
 		curl_easy_setopt(curl, CURLOPT_HTTPPOST, post);
 
-		req = curl_easy_perform(curl);
+		CURLcode ResponseCode;
+		ResponseCode = curl_easy_perform(curl);
 
-		if (req != CURLE_OK)
+		// if the POST was successful 
+		if (ResponseCode == CURLE_OK)
 		{
-			UE_LOG(LogUTSelfie, Display, TEXT("Selfie upload failed."));
-		}
-		else
-		{
+			// find and extract video URl from response
 			int start = readBuffer.find("url\":\"");
 			int end = readBuffer.find("\",\"full_url\"", start);
 			std::string substring;
+
 			if (start != std::string::npos && end != std::string::npos)
 			{
 			   substring = readBuffer.substr(start + 6, end - start - 6);
+
+			   // convert URL code to UE compatible format and insert it into the user's clipboard
 			   const char *cstr = substring.c_str();
+
 			   FString SelfieURL = FPaths::Combine(TEXT("https://vid.me/"), ANSI_TO_TCHAR(cstr));
 			   FPlatformMisc::ClipboardCopy(*SelfieURL);
+
 			   UE_LOG(LogUTSelfie, Display, TEXT("Selfie URL copied to clipboard."));
 			}
 			else
@@ -648,6 +679,12 @@ void FLetMeTakeASelfie::Upload_WebM()
 			   UE_LOG(LogUTSelfie, Display, TEXT("Failed to find URL code."));
 			}
 		}
+		else
+		{
+			UE_LOG(LogUTSelfie, Display, TEXT("Selfie upload failed."));
+		}
+
+		// reset cURL
 		curl_easy_cleanup(curl);
 	}
  	curl_global_cleanup();
